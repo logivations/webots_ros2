@@ -35,6 +35,10 @@ namespace webots_ros2_driver {
     PythonPlugin(PyObject *pyPlugin);
 
     PyObject *mPyPlugin;
+    // Webots time [s] before which step() is not forwarded to Python: a plugin's step()
+    // may return the time it next wants to be called (None = every step), which saves
+    // taking the GIL on steps where it has nothing to do.
+    double mNextStepTime = -1.0;
     PyObject *getPyWebotsNodeInstance();
   };
 }  // namespace webots_ros2_driver

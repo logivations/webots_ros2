@@ -137,21 +137,29 @@ namespace webots_ros2_control {
   }
 
   void Ros2Control::step() {
-    const int nowMs = wb_robot_get_time() * 1000.0;
+    // rounded: truncating e.g. 0.29 s * 1000 = 289.99 made a period look 1 ms short and
+    // skipped the update until the next controller step
+    const int nowMs = static_cast<int>(std::llround(wb_robot_get_time() * 1000.0));
     const int periodMs = nowMs - mLastControlUpdateMs;
     if (periodMs >= mControlPeriodMs && mNode->get_clock()->now() != rclcpp::Time(0, 0, mNode->get_clock()->get_clock_type())) {
       const rclcpp::Duration dt = rclcpp::Duration::from_seconds(mControlPeriodMs / 1000.0);
-      mControllerManager->read(mNode->get_clock()->now(), dt);
+      // Stamp the control cycle with the Webots time instead of the node clock: with
+      // use_sim_time the node clock only advances with /clock, so a /clock slower than
+      // the control rate repeated stamps (e.g. joint_states) and made dt jitter.
+      rclcpp::Time time = mNode->get_clock()->now();
+      if (mNode->get_clock()->ros_time_is_active())
+        time = rclcpp::Time(static_cast<int64_t>(std::llround(wb_robot_get_time() * 1e9)), RCL_ROS_TIME);
+      mControllerManager->read(time, dt);
 
       try {
-        mControllerManager->update(mNode->get_clock()->now(), dt);
+        mControllerManager->update(time, dt);
       } catch (const std::exception &ex) {
         RCLCPP_WARN_STREAM(mNode->get_logger(), "Controller manager update failed: " << ex.what());
       }
 
       mLastControlUpdateMs = nowMs;
 
-      mControllerManager->write(mNode->get_clock()->now(), dt);
+      mControllerManager->write(time, dt);
     }
   }
   void Ros2Control::init(webots_ros2_driver::WebotsNode *node, std::unordered_map<std::string, std::string> &) {

@@ -1,11 +1,36 @@
 #include "webots_ros2_driver/PythonPlugin.hpp"
 
+#include <webots/robot.h>
+
 static PyObject *gPyWebotsNode = NULL;
+
+namespace {
+  // The driver's main thread only holds the GIL while it runs Python plugin code.
+  // Holding it from Py_Initialize on (upstream behaviour) starves every thread a
+  // Python plugin starts: they only get the interpreter when the main thread enters
+  // Python again, i.e. their work runs on the simulation step path in 5 ms slices.
+  void initializePython() {
+    if (Py_IsInitialized())
+      return;
+    Py_Initialize();
+    PyEval_SaveThread();
+  }
+
+  class GilLock {
+  public:
+    GilLock() : mState(PyGILState_Ensure()) {}
+    ~GilLock() { PyGILState_Release(mState); }
+
+  private:
+    PyGILState_STATE mState;
+  };
+}  // namespace
 
 namespace webots_ros2_driver {
   PythonPlugin::PythonPlugin(PyObject *pyPlugin) : mPyPlugin(pyPlugin){};
 
   void PythonPlugin::init(webots_ros2_driver::WebotsNode *node, std::unordered_map<std::string, std::string> &parameters) {
+    GilLock gil;
     PyObject *pyParameters = PyDict_New();
     for (const std::pair<std::string, std::string> &parameter : parameters)
       PyDict_SetItem(pyParameters, PyUnicode_FromString(parameter.first.c_str()),
@@ -16,11 +41,26 @@ namespace webots_ros2_driver {
   }
 
   void PythonPlugin::step() {
-    PyObject_CallMethod(mPyPlugin, "step", "");
-    PyErr_Print();
+    if (mNextStepTime > 0.0 && wb_robot_get_time() + 1e-9 < mNextStepTime)
+      return;
+    GilLock gil;
+    PyObject *result = PyObject_CallMethod(mPyPlugin, "step", "");
+    if (result && PyFloat_Check(result))
+      mNextStepTime = PyFloat_AsDouble(result);
+    else if (result && PyLong_Check(result))
+      mNextStepTime = PyLong_AsDouble(result);
+    else
+      mNextStepTime = -1.0;
+    if (result)
+      Py_DECREF(result);
+    else
+      PyErr_Print();
   }
 
   void PythonPlugin::stop() {
+    // Py_Finalize needs the GIL and the main thread state, which PyGILState_Ensure
+    // restores on the main thread; the GIL is not given back afterwards.
+    PyGILState_Ensure();
     PyObject_CallMethod(mPyPlugin, "stop", "");
     Py_Finalize();
   }
@@ -69,7 +109,8 @@ class WebotsNode:
     const std::string moduleName = type.substr(0, type.find_last_of("."));
     const std::string className = type.substr(type.find_last_of(".") + 1);
 
-    Py_Initialize();
+    initializePython();
+    GilLock gil;
 
     PyObject *pyName = PyUnicode_FromString(moduleName.c_str());
     PyObject *pyModule = PyImport_Import(pyName);

@@ -15,6 +15,7 @@
 #include "webots_ros2_driver/WebotsNode.hpp"
 
 #include <yaml-cpp/yaml.h>
+#include <cstdlib>
 #include <fstream>
 #include <rcl_interfaces/srv/set_parameters.hpp>
 #include <rclcpp/parameter_value.hpp>
@@ -208,6 +209,21 @@ namespace webots_ros2_driver {
     }
 
     mStep = wb_robot_get_basic_time_step();
+    // Controller step (a multiple of the basic time step, 0 = the basic time step): with
+    // e.g. 20 ms on a 10 ms world the physics keeps its step while this controller, and
+    // the round trip with Webots that every synchronized controller costs, runs half as
+    // often. Plugins and ros2_control then run at most at this period.
+    const int stepPeriodMs = this->declare_parameter<int>("step_period_ms", 0);
+    if (stepPeriodMs > 0) {
+      const int basic = mStep;
+      mStep = std::max(1, (stepPeriodMs + basic / 2) / basic) * basic;
+      if (mStep != stepPeriodMs)
+        RCLCPP_WARN(get_logger(), "step_period_ms %d is not a multiple of the basic time step %d ms, using %d ms",
+                    stepPeriodMs, basic, mStep);
+    }
+    if (const char *period = std::getenv("WEBOTS_ROS2_PROFILE_PERIOD"))
+      mProfilePeriod = std::atof(period);
+    mProfileStart = std::chrono::steady_clock::now();
 
     // Load static plugins
     // Static plugins are automatically configured based on the robot model.
@@ -265,6 +281,7 @@ namespace webots_ros2_driver {
       if (plugin) {
         plugin->init(this, parameters);
         mPlugins.push_back(plugin);
+        mPluginNames.push_back(parameters["name"]);
       }
     }
 
@@ -287,6 +304,13 @@ namespace webots_ros2_driver {
       std::unordered_map<std::string, std::string> pluginProperties = getPluginProperties(pluginElement);
       plugin->init(this, pluginProperties);
       mPlugins.push_back(plugin);
+      std::string pluginName = type.substr(type.find_last_of(".:") + 1);
+      for (const char *key : {"device", "camera", "name"})
+        if (pluginProperties.count(key)) {
+          pluginName += "(" + pluginProperties[key] + ")";
+          break;
+        }
+      mPluginNames.push_back(pluginName);
 
       pluginElement = pluginElement->NextSiblingElement("plugin");
     }
@@ -317,13 +341,60 @@ namespace webots_ros2_driver {
       return -1;
     }
 
+    if (mProfilePeriod <= 0.0) {
+      const int result = wb_robot_step(mStep);
+      if (result == -1)
+        return result;
+      for (std::shared_ptr<PluginInterface> plugin : mPlugins)
+        plugin->step();
+      return result;
+    }
+
+    using Clock = std::chrono::steady_clock;
+    auto t0 = Clock::now();
     const int result = wb_robot_step(mStep);
+    auto t1 = Clock::now();
+    mProfileRobotStepTime += std::chrono::duration<double>(t1 - t0).count();
     if (result == -1)
       return result;
-    for (std::shared_ptr<PluginInterface> plugin : mPlugins)
-      plugin->step();
-
+    mProfilePluginTime.resize(mPlugins.size(), 0.0);
+    for (size_t i = 0; i < mPlugins.size(); i++) {
+      mPlugins[i]->step();
+      auto t2 = Clock::now();
+      mProfilePluginTime[i] += std::chrono::duration<double>(t2 - t1).count();
+      t1 = t2;
+    }
+    mProfileSteps++;
+    reportProfile();
     return result;
+  }
+
+  void WebotsNode::addSpinTime(double seconds) {
+    mProfileSpinTime += seconds;
+  }
+
+  void WebotsNode::reportProfile() {
+    const double wall = std::chrono::duration<double>(std::chrono::steady_clock::now() - mProfileStart).count();
+    if (wall < mProfilePeriod || mProfileSteps == 0)
+      return;
+    const double n = mProfileSteps;
+    double plugins = 0.0;
+    std::string detail;
+    for (size_t i = 0; i < mProfilePluginTime.size(); i++) {
+      plugins += mProfilePluginTime[i];
+      if (mProfilePluginTime[i] / n >= 5e-5) {
+        char buffer[160];
+        snprintf(buffer, sizeof(buffer), " %s %.2f", mPluginNames[i].c_str(), 1e3 * mProfilePluginTime[i] / n);
+        detail += buffer;
+      }
+      mProfilePluginTime[i] = 0.0;
+    }
+    RCLCPP_INFO(get_logger(),
+                "step profile: %.1f steps/s, per step [ms]: wb_robot_step %.2f, plugins %.2f, spin_some %.2f |%s",
+                n / wall, 1e3 * mProfileRobotStepTime / n, 1e3 * plugins / n, 1e3 * mProfileSpinTime / n, detail.c_str());
+    mProfileRobotStepTime = mProfileSpinTime = 0.0;
+    mProfileSteps = 0;
+    mProfileStart = std::chrono::steady_clock::now();
   }
 
   void WebotsNode::setAnotherNodeParameter(std::string anotherNodeName, std::string parameterName, std::string parameterValue) {

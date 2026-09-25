@@ -67,10 +67,16 @@ int main(int argc, char **argv) {
                                     "Please use the new WebotsController node instead.\033[0m");
 
   RCLCPP_INFO(node->get_logger(), "Controller successfully connected to robot in Webots simulation.");
+  // One executor for the whole run: rclcpp::spin_some(node) builds a new executor and
+  // wait set on every call, i.e. on every simulation step (~1 ms under load).
+  rclcpp::executors::SingleThreadedExecutor executor;
+  executor.add_node(node);
   while (true) {
     if (node->step() == -1)
       break;
-    rclcpp::spin_some(node);
+    const auto spinStart = std::chrono::steady_clock::now();
+    executor.spin_some();
+    node->addSpinTime(std::chrono::duration<double>(std::chrono::steady_clock::now() - spinStart).count());
   }
   // Check if the plugin is actually an instance of PythonPlugin
   bool isPython = false;

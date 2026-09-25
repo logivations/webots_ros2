@@ -41,6 +41,8 @@ namespace webots_ros2_driver {
     std::string urdf() const { return mRobotDescription; };
     static void handleSignals();
     std::vector<std::shared_ptr<PluginInterface>> mPlugins;
+    // Wall time of rclcpp::spin_some in the driver loop, for the step profile.
+    void addSpinTime(double seconds);
 
   private:
     std::unordered_map<std::string, std::string> getDeviceRosProperties(const std::string &name) const;
@@ -61,6 +63,16 @@ namespace webots_ros2_driver {
 
     rclcpp::TimerBase::SharedPtr mTimer;
     int mStep;
+    // Step profile (env WEBOTS_ROS2_PROFILE_PERIOD = seconds of wall time, 0 = off):
+    // wall time per step spent in wb_robot_step, in each plugin and in spin_some.
+    std::vector<std::string> mPluginNames;
+    double mProfilePeriod = 0.0;
+    std::vector<double> mProfilePluginTime;
+    double mProfileRobotStepTime = 0.0;
+    double mProfileSpinTime = 0.0;
+    int mProfileSteps = 0;
+    std::chrono::steady_clock::time_point mProfileStart;
+    void reportProfile();
     pluginlib::ClassLoader<PluginInterface> mPluginLoader;
     tinyxml2::XMLElement *mWebotsXMLElement;
     std::shared_ptr<tinyxml2::XMLDocument> mRobotDescriptionDocument;

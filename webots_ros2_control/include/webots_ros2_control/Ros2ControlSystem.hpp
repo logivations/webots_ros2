@@ -39,12 +39,30 @@ namespace webots_ros2_control {
     double velocity;
     double effortCommand;
     double acceleration;
+    double effort;  // motor force/torque feedback
     bool controlPosition;
     bool controlVelocity;
     bool controlEffort;
     std::string name;
     WbDeviceTag motor;
     WbDeviceTag sensor;
+    // position command clamp (command_interface params min/max), NAN = none
+    double positionCommandMin;
+    double positionCommandMax;
+    // `velocity_motor` command interface (exported as `velocity`): the Webots motor is
+    // driven in velocity mode with at most motorMaxForce, a 0 command latches the current
+    // position and holds it with a P correction (hydraulic lock), like the
+    // pixel-robotics gazebo_ros2_control fork.
+    bool velocityMotor;
+    double motorMaxForce;
+    double holdGain;
+    double holdMaxVelocity;
+    bool holding;
+    double holdPosition;
+    double lowerLimit;
+    double upperLimit;
+    // number of position samples read so far, velocity/acceleration need 2/3
+    int samples;
   };
 
   class Ros2ControlSystem : public Ros2ControlSystemInterface {
