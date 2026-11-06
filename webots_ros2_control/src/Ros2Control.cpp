@@ -217,6 +217,9 @@ namespace webots_ros2_control {
 
     rclcpp::NodeOptions options = controller_manager::get_cm_node_options();
     options.arguments(node->get_node_options().arguments());
+    // a driver composed into a container (DriverComponent) does not use the container's global arguments: neither
+    // may the controller_manager, or the container's __node remap renames it
+    options.use_global_arguments(node->get_node_options().use_global_arguments());
     mControllerManager.reset(new controller_manager::ControllerManager(std::move(resourceManager), mExecutor,
                                                                        "controller_manager", node->get_namespace(), options));
 
