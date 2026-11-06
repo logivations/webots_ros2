@@ -21,6 +21,7 @@ find_package(ament_cmake REQUIRED)
 find_package(ament_cmake_python REQUIRED)
 find_package(rosgraph_msgs REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(rclcpp_components REQUIRED)
 find_package(pluginlib REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
@@ -90,10 +91,11 @@ ament_python_install_package(vehicle
 ament_python_install_package(${PROJECT_NAME}
   PACKAGE_DIR ${PROJECT_NAME})
 
-# Driver
-set(CMAKE_INSTALL_RPATH "$ORIGIN/../controller") # Deprecated with new WebotsController node, remove with 2024.0.0
-add_executable(driver
-  src/Driver.cpp
+# Driver: WebotsNode and the static plugins in a library, shared by the driver executable and the driver component
+# (webots_ros2_driver::DriverComponent, the driver inside a component container)
+add_library(${PROJECT_NAME}_core
+  SHARED
+  src/DriverComponent.cpp
   src/WebotsNode.cpp
   src/PythonPlugin.cpp
   src/plugins/Ros2SensorPlugin.cpp
@@ -112,11 +114,13 @@ add_executable(driver
   src/utils/Math.cpp
   src/utils/Utils.cpp
 )
+set_target_properties(${PROJECT_NAME}_core PROPERTIES INSTALL_RPATH "$ORIGIN/controller")
 
 if ($ENV{ROS_DISTRO} MATCHES "humble" OR $ENV{ROS_DISTRO} MATCHES "jazzy")
-  ament_target_dependencies(driver
+  ament_target_dependencies(${PROJECT_NAME}_core
     rosgraph_msgs
     rclcpp
+    rclcpp_components
     pluginlib
     sensor_msgs
     std_msgs
@@ -127,15 +131,16 @@ if ($ENV{ROS_DISTRO} MATCHES "humble" OR $ENV{ROS_DISTRO} MATCHES "jazzy")
     tinyxml2_vendor
     TinyXML2
   )
-  target_link_libraries(driver
+  target_link_libraries(${PROJECT_NAME}_core
     ${WEBOTS_LIB}
     ${Python_LIBRARIES}
     yaml-cpp
   )
 else()
-  target_link_libraries(driver
+  target_link_libraries(${PROJECT_NAME}_core
     ${rosgraph_msgs_TARGETS}
     rclcpp::rclcpp
+    rclcpp_components::component
     pluginlib::pluginlib
     ${sensor_msgs_TARGETS}
     ${std_msgs_TARGETS}
@@ -149,9 +154,43 @@ else()
     yaml-cpp
   )
 endif()
-add_dependencies(driver
+add_dependencies(${PROJECT_NAME}_core
   compile-lib-vehicle
 )
+rclcpp_components_register_nodes(${PROJECT_NAME}_core "webots_ros2_driver::DriverComponent")
+install(TARGETS ${PROJECT_NAME}_core
+  RUNTIME DESTINATION bin
+  ARCHIVE DESTINATION lib
+  LIBRARY DESTINATION lib
+)
+
+set(CMAKE_INSTALL_RPATH "$ORIGIN/../controller") # Deprecated with new WebotsController node, remove with 2024.0.0
+add_executable(driver
+  src/Driver.cpp
+)
+# the core library is installed in lib/, the executable in lib/${PROJECT_NAME} (both in the build folder with
+# --symlink-install)
+set_target_properties(driver PROPERTIES INSTALL_RPATH "$ORIGIN/../controller;$ORIGIN/..;$ORIGIN")
+if ($ENV{ROS_DISTRO} MATCHES "humble" OR $ENV{ROS_DISTRO} MATCHES "jazzy")
+  ament_target_dependencies(driver
+    rclcpp
+    pluginlib
+    tinyxml2_vendor
+    TinyXML2
+  )
+  target_link_libraries(driver
+    ${PROJECT_NAME}_core
+    ${WEBOTS_LIB}
+  )
+else()
+  target_link_libraries(driver
+    ${PROJECT_NAME}_core
+    rclcpp::rclcpp
+    pluginlib::pluginlib
+    tinyxml2::tinyxml2
+    ${WEBOTS_LIB}
+  )
+endif()
 install(
   DIRECTORY include/
   DESTINATION include
@@ -260,6 +299,7 @@ install(
 )
 
 # Prevent pluginlib from using boost
+target_compile_definitions(${PROJECT_NAME}_core PUBLIC "PLUGINLIB__DISABLE_BOOST_FUNCTIONS")
 target_compile_definitions(driver PUBLIC "PLUGINLIB__DISABLE_BOOST_FUNCTIONS")
 target_compile_definitions(${PROJECT_NAME}_imu PUBLIC "PLUGINLIB__DISABLE_BOOST_FUNCTIONS")
 target_compile_definitions(${PROJECT_NAME}_rgbd PUBLIC "PLUGINLIB__DISABLE_BOOST_FUNCTIONS")
